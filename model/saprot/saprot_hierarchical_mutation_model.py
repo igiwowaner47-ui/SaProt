@@ -9,6 +9,7 @@ from .adapters import AdapterBlock
 from .backbone import build_saprot_backbone, freeze_module
 from .lora import inject_last3_qv_lora
 from .mutation_head import MutationHead, compute_delta_score
+from .external_wrappers import Boltz2Wrapper, ProFamWrapper, LigandMPNNWrapper
 
 
 class HierarchicalInjectedLayer(nn.Module):
@@ -56,6 +57,15 @@ class SaprotHierarchicalMutationModel(AbstractModel):
         profam_encoder: nn.Module = None,
         boltz_encoder: nn.Module = None,
         mpnn_encoder: nn.Module = None,
+        profam_wrapper: nn.Module = None,
+        boltz_wrapper: nn.Module = None,
+        ligandmpnn_wrapper: nn.Module = None,
+        boltz_repo_path: str = None,
+        boltz_entrypoint: str = None,
+        profam_repo_path: str = None,
+        profam_entrypoint: str = None,
+        ligandmpnn_repo_path: str = None,
+        ligandmpnn_entrypoint: str = None,
         **kwargs,
     ):
         self.config_path = config_path
@@ -72,6 +82,23 @@ class SaprotHierarchicalMutationModel(AbstractModel):
             "profam": profam_encoder,
             "boltz": boltz_encoder,
             "mpnn": mpnn_encoder,
+        }
+        self.external_wrappers = {
+            "profam": profam_wrapper or ProFamWrapper(
+                profam_encoder,
+                repo_path=profam_repo_path,
+                entrypoint=profam_entrypoint,
+            ),
+            "boltz": boltz_wrapper or Boltz2Wrapper(
+                boltz_encoder,
+                repo_path=boltz_repo_path,
+                entrypoint=boltz_entrypoint,
+            ),
+            "mpnn": ligandmpnn_wrapper or LigandMPNNWrapper(
+                mpnn_encoder,
+                repo_path=ligandmpnn_repo_path,
+                entrypoint=ligandmpnn_entrypoint,
+            ),
         }
         super().__init__(**kwargs)
 
@@ -143,8 +170,25 @@ class SaprotHierarchicalMutationModel(AbstractModel):
             f"{stage}_spearman": torchmetrics.SpearmanCorrCoef(),
         }
 
-    def forward(self, inputs, external_features=None, mutation_info=None):
-        external_features = external_features or {}
+    def _build_external_features(self, external_batch):
+        if external_batch is None:
+            return {}
+
+        features = {}
+        key_map = {"profam": "profam_feat", "boltz": "boltz_feat", "mpnn": "ligandmpnn_feat"}
+        input_map = {"profam": "profam_inputs", "boltz": "boltz_inputs", "mpnn": "ligandmpnn_inputs"}
+        for name, wrapper in self.external_wrappers.items():
+            feature_key = key_map[name]
+            has_direct = feature_key in external_batch and external_batch[feature_key] is not None
+            has_path = f"{feature_key}_path" in external_batch and external_batch[f"{feature_key}_path"] is not None
+            input_key = input_map[name]
+            has_inputs = input_key in external_batch and external_batch[input_key] is not None
+            if has_direct or has_path or has_inputs:
+                features[name] = wrapper.extract(external_batch)
+        return features
+
+    def forward(self, inputs, external_features=None, external_batch=None, mutation_info=None):
+        external_features = external_features or self._build_external_features(external_batch)
         for layer in self.injected_layers:
             layer.set_external_features(external_features)
 
