@@ -29,13 +29,19 @@ class AdapterBlock(nn.Module):
 
         self.dropout = nn.Dropout(dropout)
         self.mlp_norm = nn.LayerNorm(hidden_size)
+        self.mlp_fc1 = nn.Linear(hidden_size, hidden_size * mlp_ratio)
+        self.mlp_fc2 = nn.Linear(hidden_size * mlp_ratio, hidden_size)
         self.mlp = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size * mlp_ratio),
+            self.mlp_fc1,
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_size * mlp_ratio, hidden_size),
+            self.mlp_fc2,
             nn.Dropout(dropout),
         )
+        # Keep adapter path as an exact no-op at step 0.
+        # This mirrors: H_adapter = W2 * GELU(W1*(Out_attn + H_in) + b1) + b2 with W2=0.
+        nn.init.zeros_(self.mlp_fc2.weight)
+        nn.init.zeros_(self.mlp_fc2.bias)
 
     def set_feature_projector(self, projector: nn.Module):
         self.feature_proj = projector
